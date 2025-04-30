@@ -41,7 +41,11 @@
         window.addEventListener("resize", resizeCanvas);
 
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: { ideal: "environment" }  // Rear camera
+                }
+            });
             video.srcObject = stream;
             await new Promise(resolve => video.onloadedmetadata = resolve);
             video.play();
@@ -73,9 +77,10 @@
 
                 const drawFoot = (point, color, label) => {
                     if (point && point.score > 0.4) {
-                        // Mirror X for webcam view
                         let rawX = point.x / video.videoWidth * canvas.width;
                         let rawY = point.y / video.videoHeight * canvas.height;
+
+                        // Flip X for correct mirror effect (use rawX if no mirror)
                         let sx = (1 - point.x / video.videoWidth) * canvas.width;
                         let sy = rawY;
 
@@ -84,7 +89,7 @@
                         sx = smooth.x = smooth.x * smoothFactor + sx * (1 - smoothFactor);
                         sy = smooth.y = smooth.y * smoothFactor + sy * (1 - smoothFactor);
 
-                        // Draw circle
+                        // Draw
                         ctx.beginPath();
                         ctx.arc(sx, sy, 6, 0, 2 * Math.PI);
                         ctx.fillStyle = color;
@@ -94,7 +99,7 @@
                         ctx.fillStyle = "white";
                         ctx.fillText(`${label}: (${sx.toFixed(0)},${sy.toFixed(0)})`, sx + 10, sy);
 
-                        // Send to Unity in normalized format (0-1)
+                        // Normalize for Unity
                         const normX = (sx / canvas.width).toFixed(4);
                         const normY = (sy / canvas.height).toFixed(4);
                         const posStr = `${normX},${normY}`;
