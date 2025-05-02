@@ -1,26 +1,21 @@
 ﻿(async function () {
-    // Smoothing helpers
-    const smoothers = {
-        left: { x: 0, y: 0 },
-        right: { x: 0, y: 0 },
-    };
-    const smoothFactor = 0.8;
-
     async function startTracking() {
-        await tf.setBackend('webgl');
         await tf.ready();
+        await tf.setBackend('webgl');
         console.log(`TF.js backend: ${tf.getBackend()}`);
 
-        // Video setup
         const video = document.createElement("video");
         video.setAttribute("autoplay", "");
         video.setAttribute("playsinline", "");
-        video.style.display = "none";
+        video.style.position = "absolute";
+        video.style.top = "0";
+        video.style.left = "0";
+        video.style.width = "100%";
+        video.style.height = "100%";
+        video.style.zIndex = "-1";
         document.body.appendChild(video);
 
-        // Overlay canvas
         const canvas = document.createElement("canvas");
-        canvas.id = "movenet-overlay";
         canvas.style.position = "absolute";
         canvas.style.top = "0";
         canvas.style.left = "0";
@@ -41,94 +36,78 @@
         window.addEventListener("resize", resizeCanvas);
 
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: "environment" }  // Rear camera
-                }
-            });
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             video.srcObject = stream;
-            await new Promise(resolve => video.onloadedmetadata = resolve);
+            await new Promise((resolve) => (video.onloadedmetadata = resolve));
             video.play();
         } catch (err) {
-            console.error("Camera access failed:", err);
+            console.error("Camera error:", err);
             return;
         }
 
+        const net = await bodyPix.load();
         resizeCanvas();
 
-        // Load MoveNet detector
-        const detector = await window.poseDetection.createDetector(
-            window.poseDetection.SupportedModels.MoveNet,
-            {
-                modelType: window.poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
-            }
-        );
+        async function detectFeetLoop() {
+            const segmentation = await net.segmentPersonParts(video, {
+                flipHorizontal: false,
+                internalResolution: 'medium',
+            });
 
-        console.log("MoveNet detector loaded");
+            const partIds = { right: 18, left: 19 };
+            const footPixels = { right: [], left: [] };
 
-        async function detectPoseLoop() {
-            const poses = await detector.estimatePoses(video);
+            const segWidth = segmentation.width;
+            const segHeight = segmentation.height;
+
+            segmentation.data.forEach((partId, index) => {
+                const xIndex = index % segWidth;
+                const yIndex = Math.floor(index / segWidth);
+                const x = (xIndex / segWidth) * canvas.width;
+                const y = (yIndex / segHeight) * canvas.height;
+
+                if (partId === partIds.right) footPixels.right.push({ x, y });
+                else if (partId === partIds.left) footPixels.left.push({ x, y });
+            });
+
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            if (poses.length > 0) {
-                const keypoints = poses[0].keypoints;
-                const leftAnkle = keypoints.find(p => p.name === 'left_ankle');
-                const rightAnkle = keypoints.find(p => p.name === 'right_ankle');
+            for (const foot of ['left', 'right']) {
+                const pixels = footPixels[foot];
+                if (pixels.length > 0) {
+                    const avgX = pixels.reduce((sum, p) => sum + p.x, 0) / pixels.length;
+                    const avgY = pixels.reduce((sum, p) => sum + p.y, 0) / pixels.length;
 
-                const drawFoot = (point, color, label) => {
-                    if (point && point.score > 0.4) {
-                        let rawX = point.x / video.videoWidth * canvas.width;
-                        let rawY = point.y / video.videoHeight * canvas.height;
+                    ctx.beginPath();
+                    ctx.arc(avgX, avgY, 6, 0, 2 * Math.PI);
+                    ctx.fillStyle = foot === 'left' ? 'blue' : 'red';
+                    ctx.fill();
 
-                        // Flip X for correct mirror effect (use rawX if no mirror)
-                        let sx = (1 - point.x / video.videoWidth) * canvas.width;
-                        let sy = rawY;
+                    ctx.font = "14px Arial";
+                    ctx.fillStyle = "white";
+                    ctx.fillText(`${foot} (${avgX.toFixed(0)},${avgY.toFixed(0)})`, avgX + 10, avgY);
 
-                        // Smoothing
-                        const smooth = smoothers[label];
-                        sx = smooth.x = smooth.x * smoothFactor + sx * (1 - smoothFactor);
-                        sy = smooth.y = smooth.y * smoothFactor + sy * (1 - smoothFactor);
-
-                        // Draw
-                        ctx.beginPath();
-                        ctx.arc(sx, sy, 6, 0, 2 * Math.PI);
-                        ctx.fillStyle = color;
-                        ctx.fill();
-
-                        ctx.font = "14px Arial";
-                        ctx.fillStyle = "white";
-                        ctx.fillText(`${label}: (${sx.toFixed(0)},${sy.toFixed(0)})`, sx + 10, sy);
-
-                        // Normalize for Unity
-                        const normX = (sx / canvas.width).toFixed(4);
-                        const normY = (sy / canvas.height).toFixed(4);
-                        const posStr = `${normX},${normY}`;
-
-                        if (typeof unityInstance !== "undefined") {
-                            if (label === "right") {
-                                unityInstance.SendMessage("FootReceiver", "ReceiveRightFootData", posStr);
-                            } else {
-                                unityInstance.SendMessage("FootReceiver", "ReceiveLeftFootData", posStr);
-                            }
-                        }
+                    if (typeof unityInstance !== "undefined") {
+                        const normX = (avgX / canvas.width).toFixed(4);
+                        const normY = (avgY / canvas.height).toFixed(4);
+                        const pos = `${normX},${normY}`;
+                        const methodName = foot === 'left' ? "ReceiveLeftFootData" : "ReceiveRightFootData";
+                        unityInstance.SendMessage("FootReceiver", methodName, pos);
                     }
-                };
-
-                drawFoot(leftAnkle, "blue", "left");
-                drawFoot(rightAnkle, "red", "right");
+                }
             }
 
-            setTimeout(() => requestAnimationFrame(detectPoseLoop), 33); // ~30fps
+            requestAnimationFrame(detectFeetLoop);
         }
 
-        detectPoseLoop();
+        detectFeetLoop();
     }
 
     window.addEventListener("load", () => {
-        if (window.tf && window.poseDetection) {
+        if (typeof tf !== "undefined" && typeof bodyPix !== "undefined") {
             startTracking();
         } else {
-            console.error("TensorFlow.js or MoveNet not loaded.");
+            console.error("TensorFlow.js or BodyPix not loaded.");
         }
     });
 })();
