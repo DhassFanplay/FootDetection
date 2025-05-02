@@ -36,7 +36,9 @@
         window.addEventListener("resize", resizeCanvas);
 
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { exact: "environment" } }
+            });
             video.srcObject = stream;
             await new Promise((resolve) => (video.onloadedmetadata = resolve));
             video.play();
@@ -44,6 +46,7 @@
             console.error("Camera error:", err);
             return;
         }
+
 
         const net = await bodyPix.load();
         resizeCanvas();
